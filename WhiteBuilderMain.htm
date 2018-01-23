@@ -1,0 +1,452 @@
+<html>
+
+<head>
+    <script src="https://sdk.amazonaws.com/js/aws-sdk-2.175.0.min.js"></script>
+    <script>
+
+        var divWidth = 0;
+        var divHeight = 0;
+        var running = false;
+        var currentLabels = 0;
+        const accessKey = ''; //access key with Rekognition access
+        const secretKey = ''; //secret key with Rekognition access
+        AWS.config = new AWS.Config({ "accessKeyId": accessKey, "secretAccessKey": secretKey, "region": "us-east-1" });
+
+        var setupMode = false;
+
+        //setInterval(fetchBlob2, 15000);
+
+        function showBorder() {
+            setupMode = true;
+            document.getElementById('board').style.borderColor = '#22D78D';
+            document.getElementById('cropDiv').style.borderColor = '#22D78D';
+            document.getElementById('cropDivheader').style.visibility = 'visible';
+            document.getElementById('cropDiv').style.visibility = 'visible';
+            document.getElementById('cropDiv').style.resize = 'both';
+            document.getElementById('croppedImg').style.visibility = 'visible';
+            document.getElementById('board').style.background = 'url(http://127.0.0.1:8080/videoView) no-repeat'; //if using the mjpeg/node server helper, otherwise replace with the URL of your webcam
+            document.getElementById('YAMLdiv').style.visibility = 'visible';
+            document.getElementById('DataDiv').style.visibility = 'visible';
+
+
+        }
+
+        function hideBorder() {
+            document.getElementById('board').style.borderColor = '#000000';
+            //document.getElementById('cropDiv').style.borderColor = '#000000';
+            document.getElementById('board').style.background = '';
+            document.getElementById('cropDivheader').style.visibility = 'hidden';
+            document.getElementById('cropDiv').style.resize = 'none';
+            document.getElementById('cropDiv').style.visibility = 'hidden';
+            document.getElementById('croppedImg').style.visibility = 'hidden';
+            document.getElementById('YAMLdiv').style.visibility = 'hidden';
+            document.getElementById('DataDiv').style.visibility = 'hidden';
+            setupMode = false;
+        }
+
+
+        var loadTimer;
+        var imgObject;
+
+        setInterval(start, 1000);
+
+        function start() {
+            console.log('start');
+            imgObject = new Image();
+            imgObject.src = 'wbcapture.jpg?' + new Date().getTime();
+            imgObject.onload = onImgLoaded();
+
+
+        }
+
+        function doGlue() {
+            console.log('doing Glue');
+            var glue = new AWS.Glue();
+            var glueCrawlerParams = {
+                DatabaseName: 'whitebuild-db-jf', /* required */
+                Name: 'whitebuild-crawler-jf', /* required */
+                Role: 'service-role/AWSGlueServiceRole-whitebuild-test', /* required */
+                Targets: { /* required */
+                    S3Targets: [
+                        {
+                            Path: 's3://glue-whitebuild-test'
+                        }
+                        /* more items */
+                    ]
+                },
+                Description: 'Created by WhiteBuilder',
+                SchemaChangePolicy: {
+                    DeleteBehavior: DELETE_FROM_DATABASE,
+                    UpdateBehavior: UPDATE_IN_DATABASE
+                },
+                TablePrefix: 'STRING_VALUE'
+            };
+            glue.createCrawler(glueCrawlerParams, function (err, data) {
+                if (err) console.log(err, err.stack); // an error occurred
+                else console.log(data);           // successful response
+            });
+
+        }
+
+        function onImgLoaded() {
+            if (loadTimer != null) clearTimeout(loadTimer);
+            if (!imgObject.complete) {
+                loadTimer = setTimeout(function () {
+                    onImgLoaded();
+                }, 3);
+            } else {
+                onPreloadComplete();
+            }
+        }
+
+        function onPreloadComplete() {
+            //call the methods that will create a 64-bit version of thumbnail here.
+            var cropDiv = document.getElementById('cropDiv');
+            var boardDiv = document.getElementById('board');
+            var newImg = getImagePortion(imgObject, cropDiv.offsetWidth, cropDiv.offsetHeight, cropDiv.offsetLeft - boardDiv.offsetLeft, cropDiv.offsetTop - boardDiv.offsetTop, 1);
+
+            console.log(boardDiv.offsetLeft + '-' + boardDiv.offsetTop);
+
+            //place image in appropriate div
+            //document.getElementById("images").innerHTML = '<img alt=\"\" src=\"'+newImg+'\" />';
+            //console.log(document.getElementById("images").innerHTML);
+
+            var croppedImg = document.getElementById('croppedImg');
+            croppedImg.src = newImg;
+            //fetchBlob2();
+        }
+
+        function makeYAML(textDetections) {
+            var YAML = "AWSTemplateFormatVersion: '2010-09-09'\n";
+            YAML += "Description: Created by WhiteBuilder 27-Dec-2017\n";
+            YAML += "Resources:\n";
+
+            for (var item in textDetections) {
+                if (textDetections[item].Type == 'WORD') {
+                    switch (textDetections[item].DetectedText.toUpperCase()) {
+                        case 'S3':
+                            YAML += '  S3Bucket:\n';
+                            YAML += '    Type: \"AWS::S3::Bucket\"\n';
+                            YAML += '  BucketCrawler1:\n'
+                            YAML += '    Type: \"AWS::Glue::Crawler\"\n';
+                            YAML += '      Role: \"service-role/AWSGlueServiceRole-whitebuild-test\"\n';
+                            YAML += '      Description: \"Created by WhiteBuilder\"\n';
+                            YAML += '      DatabaseName: \"whitebuild-db\"\n';
+                            YAML += '      Targets:\n';
+                            YAML += '        S3Targets:\n';
+                            YAML += '          - Path: \"s3://glue-whitebuild-test\"\n';
+                            YAML += '      Name: \"whitebuilder-crawler2"\n';
+                            break;
+                        case 'EC2':
+                            YAML += '  EC2Instance:\n';
+                            YAML += '    Type: \"AWS::EC2::Instance\"\n';
+                            break;
+                        case 'DYNAMO':
+                            YAML += '  DynamoTable:\n';
+                            YAML += '    Type: \"AWS::DynamoDB::Table\"\n';
+                            break;
+                        case 'KINESIS':
+                            YAML += '  DynamoTable:\n';
+                            YAML += '    Type: \"AWS::Kinesis::Stream\"\n';
+                            break;
+
+                    }
+                }
+            }
+            return YAML;
+        }
+
+        function getImagePortion(imgObj, newWidth, newHeight, startX, startY, ratio) {
+            /* the parameters: - the image element - the new width - the new height - the x point we start taking pixels - the y point we start taking pixels - the ratio */
+            //set up canvas for thumbnail
+            var tnCanvas = document.createElement('canvas');
+            var tnCanvasContext = tnCanvas.getContext('2d');
+            tnCanvas.width = newWidth; tnCanvas.height = newHeight;
+
+            /* use the sourceCanvas to duplicate the entire image. This step was crucial for iOS4 and under devices. Follow the link at the end of this post to see what happens when you don’t do this */
+            var bufferCanvas = document.createElement('canvas');
+            var bufferContext = bufferCanvas.getContext('2d');
+            bufferCanvas.width = imgObj.width;
+            bufferCanvas.height = imgObj.height;
+            bufferContext.drawImage(imgObj, 0, 0);
+
+            /* now we use the drawImage method to take the pixels from our bufferCanvas and draw them into our thumbnail canvas */
+            tnCanvasContext.drawImage(bufferCanvas, startX, startY, newWidth * ratio, newHeight * ratio, 0, 0, newWidth, newHeight);
+            //currentImageArray = tnCanvasContext.getImageData(0,0,tnCanvas.width,tnCanvas.height).data.buffer;
+            if (setupMode == false) {
+                currentImageArray = tnCanvas.toBlob(function (blob) {
+                    console.log('doing rekognition');
+                    var arrayBuffer;
+                    var fileReader = new FileReader();
+
+                    fileReader.onload = function () {
+                        arrayBuffer = this.result;
+
+                        var rekognition = new AWS.Rekognition();
+
+                        //console.log(blob);
+
+                        var params = {
+                            Image: { /* required */
+                                Bytes: arrayBuffer
+                            }
+                        };
+
+                        rekognition.detectText(params, function (err, data) {
+                            //if (err) console.log(err, err.stack); // an error occurred
+                            //else console.log(data);           // successful response
+                            console.log('done rekognition');
+                            var validWords = 0;
+
+                            //count the number of recognized words
+                            for (var item in data.TextDetections) {
+                                if (data.TextDetections[item].Type == 'WORD') {
+                                    switch (data.TextDetections[item].DetectedText.toUpperCase()) {
+                                        case 'S3':
+                                        case 'DYNAMO':
+                                        case 'KINESIS':
+                                        case 'EC2':
+                                            validWords++;
+                                            console.log('Detected: ' + data.TextDetections[item].DetectedText)
+                                            break;
+                                    }
+                                }
+
+                            }
+
+                            if (currentLabels != validWords) {
+                                currentLabels = validWords;
+
+                                var targetDiv = document.getElementById('board');
+                                //alert(divWidth);
+                                //alert(divHeight);
+                                //alert(targetDiv.clientWidth);
+                                //if (divWidth != targetDiv.offsetWidth || divHeight != targetDiv.offsetHeight) {
+                                console.log(targetDiv.offsetWidth + ' x ' + targetDiv.offsetHeight);
+
+                                divWidth = targetDiv.offsetWidth;
+                                divHeight = targetDiv.offsetHeight;
+
+                                while (targetDiv.lastChild.id !== 'cropDiv') {
+                                    targetDiv.removeChild(targetDiv.lastChild);
+                                }
+
+
+                                for (var item in data.TextDetections) {
+                                    if (data.TextDetections[item].Type == 'WORD') {
+
+                                        var detectedItem = data.TextDetections[item];
+                                        switch (detectedItem.DetectedText.toUpperCase()) {
+                                            case 'S3':
+                                            case 'DYNAMO':
+                                            case 'KINESIS':
+                                            case 'EC2':
+                                                var newText = document.createElement('div');
+                                                //newText.innerText = detectedItem.DetectedText;
+                                                //newText.style.border = 'dotted';
+                                                newText.style.position = 'absolute';
+                                                newText.style.textAlign = 'left';
+                                                newText.style.left = (detectedItem.Geometry.BoundingBox.Left * targetDiv.offsetWidth) - 55 + 'px';
+                                                newText.style.top = (detectedItem.Geometry.BoundingBox.Top * targetDiv.offsetHeight) + 10 + 'px';
+                                                newText.style.width = (detectedItem.Geometry.BoundingBox.Width * targetDiv.offsetWidth) + 'px';
+                                                newText.style.height = (detectedItem.Geometry.BoundingBox.Height * targetDiv.offsetHeight) + 'px';
+
+                                                var newImage = document.createElement('img');
+
+                                                newImage.style.height = newText.style.height;
+                                                newImage.style.position = 'absolute';
+                                                newImage.style.left = -1 * newImage.style.width;
+                                                newImage.style.display = 'none';
+                                                newImage.onload = function (e) {
+                                                    this.style.display = 'inline';
+                                                };
+                                                newText.appendChild(newImage);
+
+                                                var descriptionSpan = document.createElement('span');
+
+                                                descriptionSpan.style.color = 'white';
+                                                descriptionSpan.style.fontFamily = 'verdana';
+
+
+
+                                                newImage.src = 'images/' + detectedItem.DetectedText + '.svg';
+                                                //descriptionSpan.innerText = '140m queryable rows. Images containing dogs, cats, people. People look sad/happy/angry/confused.'
+
+
+
+                                                newText.appendChild(descriptionSpan);
+
+                                                //alert(newText.style.left + ' - ' + newText.style.top);
+                                                targetDiv.appendChild(newText);
+                                                break;
+                                        }
+
+
+                                    }
+                                }
+                                document.getElementById('YAMLcontent').innerText = makeYAML(data.TextDetections);
+                            }
+
+                        });
+
+                    };
+                    fileReader.readAsArrayBuffer(blob);
+
+
+
+                });
+
+            }
+
+
+
+
+            return tnCanvas.toDataURL();
+        }
+
+
+
+
+
+
+    </script>
+    <style>
+        div.boardDiv {
+            background-size: 100%;
+            border: 2px solid;
+            padding: 0px;
+            width: 100%;
+            height: 100%;
+            overflow: auto;
+        }
+
+
+        #cropDiv {
+            position: absolute;
+            z-index: 9;
+            text-align: center;
+            resize: both;
+            border: 2px solid;
+            padding: 0px;
+
+            resize: both;
+            overflow: auto;
+        }
+
+        #cropDivheader {
+            padding: 10px;
+            cursor: move;
+            z-index: 10;
+            background-color: #2196F3;
+            color: #fff;
+        }
+
+        #YAMLdiv {
+            border: 2px solid;
+            padding: 4px;
+            width: 375px;
+            height: 45%;
+            overflow: auto;
+            border-color: orange;
+            position: absolute;
+            top: 25px;
+            left: 68.5%;
+            font-family: 'Verdana';
+            color: 'white';
+            visibility: 'hidden'
+        }
+
+        #DataDiv {
+            border: 2px solid;
+            padding: 4px;
+            width: 375px;
+            height: 45%;
+            overflow: auto;
+            border-color: orange;
+            position: absolute;
+            top: 405px;
+            left: 68.5%;
+            font-family: 'Verdana';
+            color: 'white';
+            visibility: 'hidden'
+        }
+    </style>
+</head>
+
+<body bgcolor='#000000' onload='start()' style='overflow:hidden'>
+    <div id='board' onresize='render()' class='boardDiv' onmouseover='showBorder()' onmouseout='hideBorder()'>
+
+
+
+        <div id="cropDiv">
+            <!--Include a header DIV with the same name as the draggable DIV, followed by "header":-->
+            <div id="cropDivheader">Click here to move</div>
+
+        </div>
+
+
+        <img id='vidImg' />
+    </div>
+    <img id='cap' />
+    <div id='images'>
+        <img id='croppedImg' style='visibility:visible' />
+    </div>
+    <div id='YAMLdiv'>
+        <img src='images/CF.svg' />
+        <span style='color:orange; position: relative; top: -70px'>CloudFormation YAML</span>
+        <pre><div style='color:orange' id='YAMLcontent'></div></pre>
+    </div>
+    <div id='DataDiv'>
+            <img src='images/athena.svg' /><img src='images/rekognition.svg' /><br>
+            <span style='color:orange; position: relative; top: -5px'>Athena + Rekognition: What's In My Data?</span>
+            <pre><div style='color:orange' id='DataContent'>Properties of the uploaded data appear here.</div></pre>
+        </div>
+    <script>
+        //Make the DIV element draggagle:
+        dragElement(document.getElementById(("cropDiv")));
+
+        function dragElement(elmnt) {
+            var pos1 = 0, pos2 = 0, pos3 = 0, pos4 = 0;
+            if (document.getElementById(elmnt.id + "header")) {
+                /* if present, the header is where you move the DIV from:*/
+                document.getElementById(elmnt.id + "header").onmousedown = dragMouseDown;
+            } else {
+                /* otherwise, move the DIV from anywhere inside the DIV:*/
+                elmnt.onmousedown = dragMouseDown;
+            }
+
+            function dragMouseDown(e) {
+                e = e || window.event;
+                // get the mouse cursor position at startup:
+                pos3 = e.clientX;
+                pos4 = e.clientY;
+                document.onmouseup = closeDragElement;
+                // call a function whenever the cursor moves:
+                document.onmousemove = elementDrag;
+            }
+
+            function elementDrag(e) {
+                e = e || window.event;
+                // calculate the new cursor position:
+                pos1 = pos3 - e.clientX;
+                pos2 = pos4 - e.clientY;
+                pos3 = e.clientX;
+                pos4 = e.clientY;
+                // set the element's new position:
+                elmnt.style.top = (elmnt.offsetTop - pos2) + "px";
+                elmnt.style.left = (elmnt.offsetLeft - pos1) + "px";
+            }
+
+            function closeDragElement() {
+                /* stop moving when mouse button is released:*/
+                document.onmouseup = null;
+                document.onmousemove = null;
+            }
+        }
+    </script>
+
+</body>
+
+
+
+</html>
